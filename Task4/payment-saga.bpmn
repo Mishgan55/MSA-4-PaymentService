@@ -1,0 +1,574 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Definitions_OrchestrPay" targetNamespace="http://orchestrpay.example/bpmn" exporter="hand-crafted" exporterVersion="1.0">
+  <bpmn:message id="Msg_PaymentInitiated" name="PaymentInitiated" />
+  <bpmn:message id="Msg_FraudDecision" name="FraudCheckDecision" />
+  <bpmn:message id="Msg_OperatorDecision" name="ManualReviewDecision" />
+  <bpmn:error id="Err_LimitExceeded" name="LIMIT_EXCEEDED" errorCode="LIMIT_EXCEEDED" />
+  <bpmn:error id="Err_DebitDeclined" name="DEBIT_DECLINED" errorCode="DEBIT_DECLINED" />
+  <bpmn:error id="Err_TransferRejected" name="TRANSFER_REJECTED" errorCode="TRANSFER_REJECTED" />
+  <bpmn:collaboration id="Collaboration_1">
+    <bpmn:participant id="Pool_Orchestrator" name="Payment Orchestrator (Camunda BPMN, Saga-оркестрация)" processRef="PaymentSaga" />
+  </bpmn:collaboration>
+  <bpmn:process id="PaymentSaga" name="Обработка платежа на маркетплейсе" isExecutable="true">
+    <bpmn:startEvent id="Start" name="Заказ оформлен,&#10;платёж инициирован">
+      <bpmn:outgoing>F_Start</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Msg_PaymentInitiated" />
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="CreatePayment" name="Создать платёж&#10;CREATE_PAYMENT&#10;[Payment Service]">
+      <bpmn:incoming>F_Start</bpmn:incoming>
+      <bpmn:outgoing>F_CreatePayment</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="ReserveLimit" name="Зарезервировать лимит&#10;RESERVE_LIMIT&#10;[Limits]">
+      <bpmn:incoming>F_CreatePayment</bpmn:incoming>
+      <bpmn:outgoing>F_ReserveLimit</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="DebitFunds" name="Списать средства со счёта клиента&#10;DEBIT_FUNDS&#10;[Payment Service]">
+      <bpmn:incoming>F_ReserveLimit</bpmn:incoming>
+      <bpmn:outgoing>F_DebitFunds</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sendTask id="RequestFraudCheck" name="Запросить антифрод-проверку&#10;FRAUD_CHECK&#10;[FraudCheck]">
+      <bpmn:incoming>F_DebitFunds</bpmn:incoming>
+      <bpmn:outgoing>F_RequestFraudCheck</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:receiveTask id="WaitFraudDecision" name="Ожидать решение антифрода" messageRef="Msg_FraudDecision">
+      <bpmn:incoming>F_RequestFraudCheck</bpmn:incoming>
+      <bpmn:outgoing>F_WaitFraudDecision</bpmn:outgoing>
+    </bpmn:receiveTask>
+    <bpmn:exclusiveGateway id="FraudDecisionGw" name="Решение антифрода?">
+      <bpmn:incoming>F_WaitFraudDecision</bpmn:incoming>
+      <bpmn:outgoing>F_FraudAllow</bpmn:outgoing>
+      <bpmn:outgoing>F_FraudManual</bpmn:outgoing>
+      <bpmn:outgoing>F_FraudDeny</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:receiveTask id="WaitOperatorDecision" name="Ожидать решение оператора (ручная проверка)" messageRef="Msg_OperatorDecision">
+      <bpmn:incoming>F_FraudManual</bpmn:incoming>
+      <bpmn:outgoing>F_WaitOp</bpmn:outgoing>
+    </bpmn:receiveTask>
+    <bpmn:exclusiveGateway id="OperatorDecisionGw" name="Решение оператора?">
+      <bpmn:incoming>F_WaitOp</bpmn:incoming>
+      <bpmn:outgoing>F_OpAllow</bpmn:outgoing>
+      <bpmn:outgoing>F_OpDeny</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateThrowEvent id="LinkBlockOperator" name="К блокировке">
+      <bpmn:incoming>F_OpDeny</bpmn:incoming>
+      <bpmn:linkEventDefinition name="BLOCK" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:serviceTask id="ApproveByCutoff" name="Разрешить по cut-off&#10;(approvedByCutoff, пост-фактум проверка)">
+      <bpmn:incoming>F_FraudCutoff</bpmn:incoming>
+      <bpmn:incoming>F_OpTimeout</bpmn:incoming>
+      <bpmn:outgoing>F_Cutoff</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="ApprovedMergeTop" name="">
+      <bpmn:incoming>F_OpAllow</bpmn:incoming>
+      <bpmn:incoming>F_Cutoff</bpmn:incoming>
+      <bpmn:outgoing>F_MergeTop</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="ApprovedMerge" name="">
+      <bpmn:incoming>F_FraudAllow</bpmn:incoming>
+      <bpmn:incoming>F_MergeTop</bpmn:incoming>
+      <bpmn:outgoing>F_ToTransfer</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="TransferToCounterparty" name="Перевести средства контрагенту&#10;TRANSFER_TO_COUNTERPARTY&#10;[Payment Service]">
+      <bpmn:incoming>F_ToTransfer</bpmn:incoming>
+      <bpmn:outgoing>F_Transferred</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:parallelGateway id="SuccessSplit" name="">
+      <bpmn:incoming>F_Transferred</bpmn:incoming>
+      <bpmn:outgoing>F_S1</bpmn:outgoing>
+      <bpmn:outgoing>F_S2</bpmn:outgoing>
+      <bpmn:outgoing>F_S3</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:serviceTask id="CompletePayment" name="Завершить платёж&#10;COMPLETE_PAYMENT&#10;[Payment Service]">
+      <bpmn:incoming>F_S1</bpmn:incoming>
+      <bpmn:outgoing>F_J1</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="PostToLedger" name="Провести операцию в учёте&#10;POST_TO_LEDGER&#10;[Финансы]">
+      <bpmn:incoming>F_S2</bpmn:incoming>
+      <bpmn:outgoing>F_J2</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sendTask id="NotifySuccess" name="Уведомить клиента об оплате&#10;NOTIFY_CUSTOMER_SUCCESS&#10;[Notification]">
+      <bpmn:incoming>F_S3</bpmn:incoming>
+      <bpmn:outgoing>F_J3</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:parallelGateway id="SuccessJoin" name="">
+      <bpmn:incoming>F_J1</bpmn:incoming>
+      <bpmn:incoming>F_J2</bpmn:incoming>
+      <bpmn:incoming>F_J3</bpmn:incoming>
+      <bpmn:outgoing>F_End</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:endEvent id="EndSuccess" name="Платёж проведён">
+      <bpmn:incoming>F_End</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="FraudCutoffTimer" name="Cut-off&#10;антифрода" attachedToRef="WaitFraudDecision" cancelActivity="true">
+      <bpmn:outgoing>F_FraudCutoff</bpmn:outgoing>
+      <bpmn:timerEventDefinition><bpmn:timeDuration>${fraudCutoffDuration}</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="OperatorTimeoutTimer" name="20 минут" attachedToRef="WaitOperatorDecision" cancelActivity="true">
+      <bpmn:outgoing>F_OpTimeout</bpmn:outgoing>
+      <bpmn:timerEventDefinition><bpmn:timeDuration>PT20M</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="LimitExceeded" name="Лимит&#10;превышен" attachedToRef="ReserveLimit" cancelActivity="true">
+      <bpmn:outgoing>F_LimitExceeded</bpmn:outgoing>
+      <bpmn:errorEventDefinition errorRef="Err_LimitExceeded" />
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="DebitDeclined" name="Отказ&#10;списания" attachedToRef="DebitFunds" cancelActivity="true">
+      <bpmn:outgoing>F_DebitDeclined</bpmn:outgoing>
+      <bpmn:errorEventDefinition errorRef="Err_DebitDeclined" />
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="TransferRejected" name="Окончательный&#10;отказ перевода" attachedToRef="TransferToCounterparty" cancelActivity="true">
+      <bpmn:outgoing>F_TransferRejected</bpmn:outgoing>
+      <bpmn:errorEventDefinition errorRef="Err_TransferRejected" />
+    </bpmn:boundaryEvent>
+    <bpmn:intermediateThrowEvent id="LinkBlockFraud" name="К блокировке">
+      <bpmn:incoming>F_FraudDeny</bpmn:incoming>
+      <bpmn:linkEventDefinition name="BLOCK" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:serviceTask id="ReleaseLimitFail" name="Освободить лимит&#10;RELEASE_LIMIT&#10;[Limits]">
+      <bpmn:incoming>F_DebitDeclined</bpmn:incoming>
+      <bpmn:outgoing>F_ReleaseFail</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="FailMerge" name="">
+      <bpmn:incoming>F_LimitExceeded</bpmn:incoming>
+      <bpmn:incoming>F_ReleaseFail</bpmn:incoming>
+      <bpmn:outgoing>F_FailMerge_CancelPaymentFail</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="CancelPaymentFail" name="Отменить платёж (FAILED)&#10;CANCEL_PAYMENT&#10;[Payment Service]">
+      <bpmn:incoming>F_FailMerge_CancelPaymentFail</bpmn:incoming>
+      <bpmn:outgoing>F_CancelPaymentFail_NotifyFail</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sendTask id="NotifyFail" name="Уведомить клиента об отказе&#10;NOTIFY_CUSTOMER_FAILURE&#10;[Notification]">
+      <bpmn:incoming>F_CancelPaymentFail_NotifyFail</bpmn:incoming>
+      <bpmn:outgoing>F_NotifyFail_EndFail</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndFail" name="Платёж не выполнен,&#10;деньги не списаны">
+      <bpmn:incoming>F_NotifyFail_EndFail</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:intermediateCatchEvent id="LinkBlockCatch" name="К блокировке">
+      <bpmn:outgoing>F_LinkBlockCatch_BlockSplit</bpmn:outgoing>
+      <bpmn:linkEventDefinition name="BLOCK" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:parallelGateway id="BlockSplit" name="">
+      <bpmn:incoming>F_LinkBlockCatch_BlockSplit</bpmn:incoming>
+      <bpmn:outgoing>F_BlockSplit_RefundFraud</bpmn:outgoing>
+      <bpmn:outgoing>F_BlockSecurity</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:serviceTask id="RefundFraud" name="Вернуть средства клиенту&#10;REFUND_FUNDS&#10;[Payment Service]">
+      <bpmn:incoming>F_BlockSplit_RefundFraud</bpmn:incoming>
+      <bpmn:outgoing>F_RefundFraud_ReleaseLimitFraud</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sendTask id="NotifySecurity" name="Уведомить службу безопасности&#10;NOTIFY_SECURITY">
+      <bpmn:incoming>F_BlockSecurity</bpmn:incoming>
+      <bpmn:outgoing>F_SecurityJoin</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:serviceTask id="ReleaseLimitFraud" name="Освободить лимит&#10;RELEASE_LIMIT&#10;[Limits]">
+      <bpmn:incoming>F_RefundFraud_ReleaseLimitFraud</bpmn:incoming>
+      <bpmn:outgoing>F_ReleaseLimitFraud_BlockJoin</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:parallelGateway id="BlockJoin" name="">
+      <bpmn:incoming>F_ReleaseLimitFraud_BlockJoin</bpmn:incoming>
+      <bpmn:incoming>F_SecurityJoin</bpmn:incoming>
+      <bpmn:outgoing>F_BlockJoin_CancelPaymentFraud</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:serviceTask id="CancelPaymentFraud" name="Статус REFUNDED (FRAUD)&#10;CANCEL_PAYMENT&#10;[Payment Service]">
+      <bpmn:incoming>F_BlockJoin_CancelPaymentFraud</bpmn:incoming>
+      <bpmn:outgoing>F_CancelPaymentFraud_NotifyBlocked</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sendTask id="NotifyBlocked" name="Уведомить клиента о блокировке и возврате&#10;NOTIFY_CUSTOMER_FAILURE">
+      <bpmn:incoming>F_CancelPaymentFraud_NotifyBlocked</bpmn:incoming>
+      <bpmn:outgoing>F_NotifyBlocked_EndBlocked</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndBlocked" name="Платёж заблокирован,&#10;деньги возвращены">
+      <bpmn:incoming>F_NotifyBlocked_EndBlocked</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:serviceTask id="RefundTech" name="Вернуть средства клиенту&#10;REFUND_FUNDS&#10;[Payment Service]">
+      <bpmn:incoming>F_TransferRejected</bpmn:incoming>
+      <bpmn:outgoing>F_RefundTech_ReleaseLimitTech</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="ReleaseLimitTech" name="Освободить лимит&#10;RELEASE_LIMIT&#10;[Limits]">
+      <bpmn:incoming>F_RefundTech_ReleaseLimitTech</bpmn:incoming>
+      <bpmn:outgoing>F_ReleaseLimitTech_CancelPaymentTech</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="CancelPaymentTech" name="Статус REFUNDED (TECHNICAL)&#10;CANCEL_PAYMENT&#10;[Payment Service]">
+      <bpmn:incoming>F_ReleaseLimitTech_CancelPaymentTech</bpmn:incoming>
+      <bpmn:outgoing>F_CancelPaymentTech_NotifyRefundTech</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sendTask id="NotifyRefundTech" name="Уведомить клиента о возврате&#10;NOTIFY_CUSTOMER_FAILURE">
+      <bpmn:incoming>F_CancelPaymentTech_NotifyRefundTech</bpmn:incoming>
+      <bpmn:outgoing>F_NotifyRefundTech_EndRefundTech</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndRefundTech" name="Платёж отменён,&#10;деньги возвращены">
+      <bpmn:incoming>F_NotifyRefundTech_EndRefundTech</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="F_Start" sourceRef="Start" targetRef="CreatePayment" />
+    <bpmn:sequenceFlow id="F_CreatePayment" sourceRef="CreatePayment" targetRef="ReserveLimit" />
+    <bpmn:sequenceFlow id="F_ReserveLimit" sourceRef="ReserveLimit" targetRef="DebitFunds" />
+    <bpmn:sequenceFlow id="F_DebitFunds" sourceRef="DebitFunds" targetRef="RequestFraudCheck" />
+    <bpmn:sequenceFlow id="F_RequestFraudCheck" sourceRef="RequestFraudCheck" targetRef="WaitFraudDecision" />
+    <bpmn:sequenceFlow id="F_WaitFraudDecision" sourceRef="WaitFraudDecision" targetRef="FraudDecisionGw" />
+    <bpmn:sequenceFlow id="F_FraudAllow" name="Разрешение" sourceRef="FraudDecisionGw" targetRef="ApprovedMerge" />
+    <bpmn:sequenceFlow id="F_FraudManual" name="Ручная проверка" sourceRef="FraudDecisionGw" targetRef="WaitOperatorDecision" />
+    <bpmn:sequenceFlow id="F_FraudDeny" name="Запрет" sourceRef="FraudDecisionGw" targetRef="LinkBlockFraud" />
+    <bpmn:sequenceFlow id="F_WaitOp" sourceRef="WaitOperatorDecision" targetRef="OperatorDecisionGw" />
+    <bpmn:sequenceFlow id="F_OpAllow" name="Разрешение" sourceRef="OperatorDecisionGw" targetRef="ApprovedMergeTop" />
+    <bpmn:sequenceFlow id="F_OpDeny" name="Запрет" sourceRef="OperatorDecisionGw" targetRef="LinkBlockOperator" />
+    <bpmn:sequenceFlow id="F_FraudCutoff" sourceRef="FraudCutoffTimer" targetRef="ApproveByCutoff" />
+    <bpmn:sequenceFlow id="F_OpTimeout" sourceRef="OperatorTimeoutTimer" targetRef="ApproveByCutoff" />
+    <bpmn:sequenceFlow id="F_Cutoff" sourceRef="ApproveByCutoff" targetRef="ApprovedMergeTop" />
+    <bpmn:sequenceFlow id="F_MergeTop" sourceRef="ApprovedMergeTop" targetRef="ApprovedMerge" />
+    <bpmn:sequenceFlow id="F_ToTransfer" sourceRef="ApprovedMerge" targetRef="TransferToCounterparty" />
+    <bpmn:sequenceFlow id="F_Transferred" sourceRef="TransferToCounterparty" targetRef="SuccessSplit" />
+    <bpmn:sequenceFlow id="F_S1" sourceRef="SuccessSplit" targetRef="CompletePayment" />
+    <bpmn:sequenceFlow id="F_S2" sourceRef="SuccessSplit" targetRef="PostToLedger" />
+    <bpmn:sequenceFlow id="F_S3" sourceRef="SuccessSplit" targetRef="NotifySuccess" />
+    <bpmn:sequenceFlow id="F_J1" sourceRef="CompletePayment" targetRef="SuccessJoin" />
+    <bpmn:sequenceFlow id="F_J2" sourceRef="PostToLedger" targetRef="SuccessJoin" />
+    <bpmn:sequenceFlow id="F_J3" sourceRef="NotifySuccess" targetRef="SuccessJoin" />
+    <bpmn:sequenceFlow id="F_End" sourceRef="SuccessJoin" targetRef="EndSuccess" />
+    <bpmn:sequenceFlow id="F_LimitExceeded" sourceRef="LimitExceeded" targetRef="FailMerge" />
+    <bpmn:sequenceFlow id="F_DebitDeclined" sourceRef="DebitDeclined" targetRef="ReleaseLimitFail" />
+    <bpmn:sequenceFlow id="F_ReleaseFail" sourceRef="ReleaseLimitFail" targetRef="FailMerge" />
+    <bpmn:sequenceFlow id="F_FailMerge_CancelPaymentFail" sourceRef="FailMerge" targetRef="CancelPaymentFail" />
+    <bpmn:sequenceFlow id="F_CancelPaymentFail_NotifyFail" sourceRef="CancelPaymentFail" targetRef="NotifyFail" />
+    <bpmn:sequenceFlow id="F_NotifyFail_EndFail" sourceRef="NotifyFail" targetRef="EndFail" />
+    <bpmn:sequenceFlow id="F_LinkBlockCatch_BlockSplit" sourceRef="LinkBlockCatch" targetRef="BlockSplit" />
+    <bpmn:sequenceFlow id="F_BlockSplit_RefundFraud" sourceRef="BlockSplit" targetRef="RefundFraud" />
+    <bpmn:sequenceFlow id="F_RefundFraud_ReleaseLimitFraud" sourceRef="RefundFraud" targetRef="ReleaseLimitFraud" />
+    <bpmn:sequenceFlow id="F_ReleaseLimitFraud_BlockJoin" sourceRef="ReleaseLimitFraud" targetRef="BlockJoin" />
+    <bpmn:sequenceFlow id="F_BlockJoin_CancelPaymentFraud" sourceRef="BlockJoin" targetRef="CancelPaymentFraud" />
+    <bpmn:sequenceFlow id="F_CancelPaymentFraud_NotifyBlocked" sourceRef="CancelPaymentFraud" targetRef="NotifyBlocked" />
+    <bpmn:sequenceFlow id="F_NotifyBlocked_EndBlocked" sourceRef="NotifyBlocked" targetRef="EndBlocked" />
+    <bpmn:sequenceFlow id="F_BlockSecurity" sourceRef="BlockSplit" targetRef="NotifySecurity" />
+    <bpmn:sequenceFlow id="F_SecurityJoin" sourceRef="NotifySecurity" targetRef="BlockJoin" />
+    <bpmn:sequenceFlow id="F_TransferRejected" sourceRef="TransferRejected" targetRef="RefundTech" />
+    <bpmn:sequenceFlow id="F_RefundTech_ReleaseLimitTech" sourceRef="RefundTech" targetRef="ReleaseLimitTech" />
+    <bpmn:sequenceFlow id="F_ReleaseLimitTech_CancelPaymentTech" sourceRef="ReleaseLimitTech" targetRef="CancelPaymentTech" />
+    <bpmn:sequenceFlow id="F_CancelPaymentTech_NotifyRefundTech" sourceRef="CancelPaymentTech" targetRef="NotifyRefundTech" />
+    <bpmn:sequenceFlow id="F_NotifyRefundTech_EndRefundTech" sourceRef="NotifyRefundTech" targetRef="EndRefundTech" />
+    <bpmn:textAnnotation id="A_Debit"><bpmn:text>Денежные операции вызываются с ключом идемпотентности. При таймауте: запрос статуса операции, затем повтор</bpmn:text></bpmn:textAnnotation>
+    <bpmn:association id="Assoc_A_Debit" sourceRef="DebitFunds" targetRef="A_Debit" />
+    <bpmn:textAnnotation id="A_Cutoff"><bpmn:text>Нет ответа до cut-off-time: транзакция разрешается по умолчанию, ставится флаг и пост-фактум проверка</bpmn:text></bpmn:textAnnotation>
+    <bpmn:association id="Assoc_A_Cutoff" sourceRef="ApproveByCutoff" targetRef="A_Cutoff" />
+    <bpmn:textAnnotation id="A_Pivot"><bpmn:text>PIVOT-точка. До неё сбой компенсируется, после неё шаги только повторяются до успеха</bpmn:text></bpmn:textAnnotation>
+    <bpmn:association id="Assoc_A_Pivot" sourceRef="TransferToCounterparty" targetRef="A_Pivot" />
+    <bpmn:textAnnotation id="A_Comp"><bpmn:text>Компенсации идемпотентны и повторяются с backoff до успеха. Поддержка не участвует, при долгом сбое алерт SRE</bpmn:text></bpmn:textAnnotation>
+    <bpmn:association id="Assoc_A_Comp" sourceRef="CancelPaymentFraud" targetRef="A_Comp" />
+    <bpmn:textAnnotation id="A_Wait"><bpmn:text>Состояние ожидания хранится в PostgreSQL и переживает рестарт оркестратора</bpmn:text></bpmn:textAnnotation>
+    <bpmn:association id="Assoc_A_Wait" sourceRef="WaitFraudDecision" targetRef="A_Wait" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_1"><bpmndi:BPMNPlane id="Plane_1" bpmnElement="Collaboration_1">
+    <bpmndi:BPMNShape id="Pool_di" bpmnElement="Pool_Orchestrator" isHorizontal="true"><dc:Bounds x="32" y="60" width="4386" height="1288" /></bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="Start_di" bpmnElement="Start"><dc:Bounds x="102" y="652" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="65" y="692" width="110" height="28" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="CreatePayment_di" bpmnElement="CreatePayment"><dc:Bounds x="278" y="622" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="ReserveLimit_di" bpmnElement="ReserveLimit"><dc:Bounds x="542" y="622" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="DebitFunds_di" bpmnElement="DebitFunds"><dc:Bounds x="808" y="622" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="RequestFraudCheck_di" bpmnElement="RequestFraudCheck"><dc:Bounds x="1072" y="622" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="WaitFraudDecision_di" bpmnElement="WaitFraudDecision"><dc:Bounds x="1338" y="622" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="FraudDecisionGw_di" bpmnElement="FraudDecisionGw" isMarkerVisible="true"><dc:Bounds x="1685" y="645" width="50" height="50" />
+      <bpmndi:BPMNLabel><dc:Bounds x="1590" y="629" width="110" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="WaitOperatorDecision_di" bpmnElement="WaitOperatorDecision"><dc:Bounds x="1868" y="478" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="OperatorDecisionGw_di" bpmnElement="OperatorDecisionGw" isMarkerVisible="true"><dc:Bounds x="2215" y="500" width="50" height="50" />
+      <bpmndi:BPMNLabel><dc:Bounds x="2185" y="554" width="110" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="LinkBlockOperator_di" bpmnElement="LinkBlockOperator"><dc:Bounds x="2222" y="362" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="2262" y="373" width="110" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="ApproveByCutoff_di" bpmnElement="ApproveByCutoff"><dc:Bounds x="2398" y="188" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="ApprovedMergeTop_di" bpmnElement="ApprovedMergeTop" isMarkerVisible="true"><dc:Bounds x="2745" y="500" width="50" height="50" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="ApprovedMerge_di" bpmnElement="ApprovedMerge" isMarkerVisible="true"><dc:Bounds x="2745" y="645" width="50" height="50" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="TransferToCounterparty_di" bpmnElement="TransferToCounterparty"><dc:Bounds x="2928" y="622" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="SuccessSplit_di" bpmnElement="SuccessSplit"><dc:Bounds x="3275" y="645" width="50" height="50" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="CompletePayment_di" bpmnElement="CompletePayment"><dc:Bounds x="3458" y="478" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="PostToLedger_di" bpmnElement="PostToLedger"><dc:Bounds x="3458" y="622" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="NotifySuccess_di" bpmnElement="NotifySuccess"><dc:Bounds x="3458" y="768" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="SuccessJoin_di" bpmnElement="SuccessJoin"><dc:Bounds x="3805" y="645" width="50" height="50" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="EndSuccess_di" bpmnElement="EndSuccess"><dc:Bounds x="4077" y="652" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="4040" y="692" width="110" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="FraudCutoffTimer_di" bpmnElement="FraudCutoffTimer"><dc:Bounds x="1457" y="604" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="1495" y="574" width="110" height="28" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="OperatorTimeoutTimer_di" bpmnElement="OperatorTimeoutTimer"><dc:Bounds x="1987" y="460" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="2025" y="444" width="110" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="LimitExceeded_di" bpmnElement="LimitExceeded"><dc:Bounds x="562" y="700" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="602" y="722" width="110" height="28" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="DebitDeclined_di" bpmnElement="DebitDeclined"><dc:Bounds x="897" y="700" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="937" y="722" width="110" height="28" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="TransferRejected_di" bpmnElement="TransferRejected"><dc:Bounds x="2947" y="700" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="2987" y="722" width="110" height="28" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="LinkBlockFraud_di" bpmnElement="LinkBlockFraud"><dc:Bounds x="1692" y="797" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="1732" y="808" width="110" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="ReleaseLimitFail_di" bpmnElement="ReleaseLimitFail"><dc:Bounds x="808" y="768" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="FailMerge_di" bpmnElement="FailMerge" isMarkerVisible="true"><dc:Bounds x="890" y="935" width="50" height="50" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="CancelPaymentFail_di" bpmnElement="CancelPaymentFail"><dc:Bounds x="1072" y="912" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="NotifyFail_di" bpmnElement="NotifyFail"><dc:Bounds x="1338" y="912" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="EndFail_di" bpmnElement="EndFail"><dc:Bounds x="1692" y="942" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="1655" y="982" width="110" height="28" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="LinkBlockCatch_di" bpmnElement="LinkBlockCatch"><dc:Bounds x="1957" y="1087" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="1920" y="1127" width="110" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="BlockSplit_di" bpmnElement="BlockSplit"><dc:Bounds x="2215" y="1080" width="50" height="50" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="RefundFraud_di" bpmnElement="RefundFraud"><dc:Bounds x="2398" y="1058" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="NotifySecurity_di" bpmnElement="NotifySecurity"><dc:Bounds x="2398" y="1202" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="ReleaseLimitFraud_di" bpmnElement="ReleaseLimitFraud"><dc:Bounds x="2662" y="1058" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="BlockJoin_di" bpmnElement="BlockJoin"><dc:Bounds x="3010" y="1080" width="50" height="50" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="CancelPaymentFraud_di" bpmnElement="CancelPaymentFraud"><dc:Bounds x="3192" y="1058" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="NotifyBlocked_di" bpmnElement="NotifyBlocked"><dc:Bounds x="3458" y="1058" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="EndBlocked_di" bpmnElement="EndBlocked"><dc:Bounds x="3812" y="1087" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="3775" y="1127" width="110" height="28" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="RefundTech_di" bpmnElement="RefundTech"><dc:Bounds x="3192" y="912" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="ReleaseLimitTech_di" bpmnElement="ReleaseLimitTech"><dc:Bounds x="3458" y="912" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="CancelPaymentTech_di" bpmnElement="CancelPaymentTech"><dc:Bounds x="3722" y="912" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="NotifyRefundTech_di" bpmnElement="NotifyRefundTech"><dc:Bounds x="3988" y="912" width="215" height="95" />
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNShape id="EndRefundTech_di" bpmnElement="EndRefundTech"><dc:Bounds x="4342" y="942" width="36" height="36" />
+      <bpmndi:BPMNLabel><dc:Bounds x="4305" y="982" width="110" height="28" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNShape>
+    <bpmndi:BPMNEdge id="F_Start_di" bpmnElement="F_Start">
+      <di:waypoint x="138" y="670" />
+      <di:waypoint x="278" y="670" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_CreatePayment_di" bpmnElement="F_CreatePayment">
+      <di:waypoint x="492" y="670" />
+      <di:waypoint x="542" y="670" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_ReserveLimit_di" bpmnElement="F_ReserveLimit">
+      <di:waypoint x="758" y="670" />
+      <di:waypoint x="808" y="670" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_DebitFunds_di" bpmnElement="F_DebitFunds">
+      <di:waypoint x="1022" y="670" />
+      <di:waypoint x="1072" y="670" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_RequestFraudCheck_di" bpmnElement="F_RequestFraudCheck">
+      <di:waypoint x="1288" y="670" />
+      <di:waypoint x="1338" y="670" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_WaitFraudDecision_di" bpmnElement="F_WaitFraudDecision">
+      <di:waypoint x="1552" y="670" />
+      <di:waypoint x="1685" y="670" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_FraudAllow_di" bpmnElement="F_FraudAllow">
+      <di:waypoint x="1735" y="670" />
+      <di:waypoint x="2745" y="670" />
+      <bpmndi:BPMNLabel><dc:Bounds x="1743" y="650" width="80" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_FraudManual_di" bpmnElement="F_FraudManual">
+      <di:waypoint x="1710" y="645" />
+      <di:waypoint x="1710" y="525" />
+      <di:waypoint x="1868" y="525" />
+      <bpmndi:BPMNLabel><dc:Bounds x="1718" y="505" width="100" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_FraudDeny_di" bpmnElement="F_FraudDeny">
+      <di:waypoint x="1710" y="695" />
+      <di:waypoint x="1710" y="797" />
+      <bpmndi:BPMNLabel><dc:Bounds x="1718" y="701" width="50" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_WaitOp_di" bpmnElement="F_WaitOp">
+      <di:waypoint x="2082" y="525" />
+      <di:waypoint x="2215" y="525" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_OpAllow_di" bpmnElement="F_OpAllow">
+      <di:waypoint x="2265" y="525" />
+      <di:waypoint x="2745" y="525" />
+      <bpmndi:BPMNLabel><dc:Bounds x="2273" y="505" width="80" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_OpDeny_di" bpmnElement="F_OpDeny">
+      <di:waypoint x="2240" y="500" />
+      <di:waypoint x="2240" y="398" />
+      <bpmndi:BPMNLabel><dc:Bounds x="2184" y="464" width="50" height="14" /></bpmndi:BPMNLabel>
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_FraudCutoff_di" bpmnElement="F_FraudCutoff">
+      <di:waypoint x="1475" y="604" />
+      <di:waypoint x="1475" y="90" />
+      <di:waypoint x="2505" y="90" />
+      <di:waypoint x="2505" y="188" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_OpTimeout_di" bpmnElement="F_OpTimeout">
+      <di:waypoint x="2005" y="460" />
+      <di:waypoint x="2005" y="235" />
+      <di:waypoint x="2398" y="235" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_Cutoff_di" bpmnElement="F_Cutoff">
+      <di:waypoint x="2612" y="235" />
+      <di:waypoint x="2770" y="235" />
+      <di:waypoint x="2770" y="500" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_MergeTop_di" bpmnElement="F_MergeTop">
+      <di:waypoint x="2770" y="550" />
+      <di:waypoint x="2770" y="645" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_ToTransfer_di" bpmnElement="F_ToTransfer">
+      <di:waypoint x="2795" y="670" />
+      <di:waypoint x="2928" y="670" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_Transferred_di" bpmnElement="F_Transferred">
+      <di:waypoint x="3142" y="670" />
+      <di:waypoint x="3275" y="670" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_S1_di" bpmnElement="F_S1">
+      <di:waypoint x="3300" y="645" />
+      <di:waypoint x="3300" y="525" />
+      <di:waypoint x="3458" y="525" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_S2_di" bpmnElement="F_S2">
+      <di:waypoint x="3325" y="670" />
+      <di:waypoint x="3458" y="670" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_S3_di" bpmnElement="F_S3">
+      <di:waypoint x="3300" y="695" />
+      <di:waypoint x="3300" y="815" />
+      <di:waypoint x="3458" y="815" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_J1_di" bpmnElement="F_J1">
+      <di:waypoint x="3672" y="525" />
+      <di:waypoint x="3830" y="525" />
+      <di:waypoint x="3830" y="645" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_J2_di" bpmnElement="F_J2">
+      <di:waypoint x="3672" y="670" />
+      <di:waypoint x="3805" y="670" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_J3_di" bpmnElement="F_J3">
+      <di:waypoint x="3672" y="815" />
+      <di:waypoint x="3830" y="815" />
+      <di:waypoint x="3830" y="695" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_End_di" bpmnElement="F_End">
+      <di:waypoint x="3855" y="670" />
+      <di:waypoint x="4077" y="670" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_LimitExceeded_di" bpmnElement="F_LimitExceeded">
+      <di:waypoint x="580" y="736" />
+      <di:waypoint x="580" y="960" />
+      <di:waypoint x="890" y="960" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_DebitDeclined_di" bpmnElement="F_DebitDeclined">
+      <di:waypoint x="915" y="736" />
+      <di:waypoint x="915" y="768" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_ReleaseFail_di" bpmnElement="F_ReleaseFail">
+      <di:waypoint x="915" y="862" />
+      <di:waypoint x="915" y="935" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_FailMerge_CancelPaymentFail_di" bpmnElement="F_FailMerge_CancelPaymentFail">
+      <di:waypoint x="940" y="960" />
+      <di:waypoint x="1072" y="960" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_CancelPaymentFail_NotifyFail_di" bpmnElement="F_CancelPaymentFail_NotifyFail">
+      <di:waypoint x="1288" y="960" />
+      <di:waypoint x="1338" y="960" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_NotifyFail_EndFail_di" bpmnElement="F_NotifyFail_EndFail">
+      <di:waypoint x="1552" y="960" />
+      <di:waypoint x="1692" y="960" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_LinkBlockCatch_BlockSplit_di" bpmnElement="F_LinkBlockCatch_BlockSplit">
+      <di:waypoint x="1993" y="1105" />
+      <di:waypoint x="2215" y="1105" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_BlockSplit_RefundFraud_di" bpmnElement="F_BlockSplit_RefundFraud">
+      <di:waypoint x="2265" y="1105" />
+      <di:waypoint x="2398" y="1105" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_RefundFraud_ReleaseLimitFraud_di" bpmnElement="F_RefundFraud_ReleaseLimitFraud">
+      <di:waypoint x="2612" y="1105" />
+      <di:waypoint x="2662" y="1105" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_ReleaseLimitFraud_BlockJoin_di" bpmnElement="F_ReleaseLimitFraud_BlockJoin">
+      <di:waypoint x="2878" y="1105" />
+      <di:waypoint x="3010" y="1105" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_BlockJoin_CancelPaymentFraud_di" bpmnElement="F_BlockJoin_CancelPaymentFraud">
+      <di:waypoint x="3060" y="1105" />
+      <di:waypoint x="3192" y="1105" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_CancelPaymentFraud_NotifyBlocked_di" bpmnElement="F_CancelPaymentFraud_NotifyBlocked">
+      <di:waypoint x="3408" y="1105" />
+      <di:waypoint x="3458" y="1105" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_NotifyBlocked_EndBlocked_di" bpmnElement="F_NotifyBlocked_EndBlocked">
+      <di:waypoint x="3672" y="1105" />
+      <di:waypoint x="3812" y="1105" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_BlockSecurity_di" bpmnElement="F_BlockSecurity">
+      <di:waypoint x="2240" y="1130" />
+      <di:waypoint x="2240" y="1250" />
+      <di:waypoint x="2398" y="1250" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_SecurityJoin_di" bpmnElement="F_SecurityJoin">
+      <di:waypoint x="2612" y="1250" />
+      <di:waypoint x="3035" y="1250" />
+      <di:waypoint x="3035" y="1130" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_TransferRejected_di" bpmnElement="F_TransferRejected">
+      <di:waypoint x="2965" y="736" />
+      <di:waypoint x="2965" y="960" />
+      <di:waypoint x="3192" y="960" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_RefundTech_ReleaseLimitTech_di" bpmnElement="F_RefundTech_ReleaseLimitTech">
+      <di:waypoint x="3408" y="960" />
+      <di:waypoint x="3458" y="960" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_ReleaseLimitTech_CancelPaymentTech_di" bpmnElement="F_ReleaseLimitTech_CancelPaymentTech">
+      <di:waypoint x="3672" y="960" />
+      <di:waypoint x="3722" y="960" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_CancelPaymentTech_NotifyRefundTech_di" bpmnElement="F_CancelPaymentTech_NotifyRefundTech">
+      <di:waypoint x="3938" y="960" />
+      <di:waypoint x="3988" y="960" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNEdge id="F_NotifyRefundTech_EndRefundTech_di" bpmnElement="F_NotifyRefundTech_EndRefundTech">
+      <di:waypoint x="4202" y="960" />
+      <di:waypoint x="4342" y="960" />
+    </bpmndi:BPMNEdge>
+    <bpmndi:BPMNShape id="A_Debit_di" bpmnElement="A_Debit"><dc:Bounds x="875" y="416" width="230" height="60" /></bpmndi:BPMNShape>
+    <bpmndi:BPMNEdge id="Assoc_A_Debit_di" bpmnElement="Assoc_A_Debit"><di:waypoint x="935" y="622" /><di:waypoint x="895" y="476" /></bpmndi:BPMNEdge>
+    <bpmndi:BPMNShape id="A_Cutoff_di" bpmnElement="A_Cutoff"><dc:Bounds x="2800" y="148" width="250" height="60" /></bpmndi:BPMNShape>
+    <bpmndi:BPMNEdge id="Assoc_A_Cutoff_di" bpmnElement="Assoc_A_Cutoff"><di:waypoint x="2612" y="235" /><di:waypoint x="2800" y="178" /></bpmndi:BPMNEdge>
+    <bpmndi:BPMNShape id="A_Pivot_di" bpmnElement="A_Pivot"><dc:Bounds x="3055" y="394" width="200" height="74" /></bpmndi:BPMNShape>
+    <bpmndi:BPMNEdge id="Assoc_A_Pivot_di" bpmnElement="Assoc_A_Pivot"><di:waypoint x="3055" y="622" /><di:waypoint x="3075" y="468" /></bpmndi:BPMNEdge>
+    <bpmndi:BPMNShape id="A_Comp_di" bpmnElement="A_Comp"><dc:Bounds x="3350" y="1250" width="260" height="60" /></bpmndi:BPMNShape>
+    <bpmndi:BPMNEdge id="Assoc_A_Comp_di" bpmnElement="Assoc_A_Comp"><di:waypoint x="3320" y="1152" /><di:waypoint x="3370" y="1250" /></bpmndi:BPMNEdge>
+    <bpmndi:BPMNShape id="A_Wait_di" bpmnElement="A_Wait"><dc:Bounds x="1495" y="424" width="190" height="64" /></bpmndi:BPMNShape>
+    <bpmndi:BPMNEdge id="Assoc_A_Wait_di" bpmnElement="Assoc_A_Wait"><di:waypoint x="1465" y="622" /><di:waypoint x="1515" y="488" /></bpmndi:BPMNEdge>
+  </bpmndi:BPMNPlane></bpmndi:BPMNDiagram>
+</bpmn:definitions>
